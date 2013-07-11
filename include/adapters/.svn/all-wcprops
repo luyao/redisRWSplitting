@@ -1,0 +1,23 @@
+K 25
+svn:wc:ra_dav:version-url
+V 63
+/svn/DP/!svn/ver/21754/online/redis/trunk/deps/hiredis/adapters
+END
+libev.h
+K 25
+svn:wc:ra_dav:version-url
+V 71
+/svn/DP/!svn/ver/21754/online/redis/trunk/deps/hiredis/adapters/libev.h
+END
+ae.h
+K 25
+svn:wc:ra_dav:version-url
+V 68
+/svn/DP/!svn/ver/21754/online/redis/trunk/deps/hiredis/adapters/ae.h
+END
+libevent.h
+K 25
+svn:wc:ra_dav:version-url
+V 74
+/svn/DP/!svn/ver/21754/online/redis/trunk/deps/hiredis/adapters/libevent.h
+END
