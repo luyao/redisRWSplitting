@@ -105,7 +105,7 @@ public:
 
 	int setWriteCallback(functionHandle pF = NULL);
 
-	void eventRun();
+	static int eventRun();
 private:
 	RedisRWSplitClient(const RedisRWSplitClient&);
 	RedisRWSplitClient operator=(const RedisRWSplitClient&);

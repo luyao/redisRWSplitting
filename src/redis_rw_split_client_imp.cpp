@@ -20,6 +20,7 @@
 #include <string>
 #include <iostream>
 #include "adapters/libevent.h" 
+#include "adapters/ae.h"
 
 using namespace std;
 
@@ -46,8 +47,10 @@ public:
 	int setDisconnectCallback(connectHandle pF = NULL);
 	int setWriteCallback(functionHandle     pF = NULL);
 
-	void eventRun();
+	static int eventRun();
 private:
+	void _reconnectCallback(const redisAsyncContext *c, int status);
+	static aeEventLoop* getEventHandle();
 	static void writeCallback(void *pParam);
 	RedisRWSplitClientImp(const RedisRWSplitClientImp&);
 	RedisRWSplitClientImp operator=(const RedisRWSplitClientImp&);
@@ -65,15 +68,33 @@ private:
 
 	struct redisAsyncContext *_pAsynContext;
 	struct redisContext      *_pContext;
-	struct event_base        *_pEvent;
-	pthread_t                _th;
+	static aeEventLoop       *_pLoop;
+	static pthread_t         _th;
 };
+
+void RedisRWSplitClientImp::_reconnectCallback(const redisAsyncContext *c, int status)
+{	
+	if (status != REDIS_OK) {
+		printf("Error: %s\n", c->errstr);
+		//_pAsynContext;
+	}   
+	printf("Disconnected...\n");
+}
+
+aeEventLoop* RedisRWSplitClientImp::_pLoop = aeCreateEventLoop(8192);
+
+pthread_t RedisRWSplitClientImp::_th;
+
+aeEventLoop* RedisRWSplitClientImp::getEventHandle()
+{
+	return _pLoop;
+}
 
 RedisRWSplitClientImp::RedisRWSplitClientImp():
 	_sReadHost(), _sWriteHost(), _nReadPort(0), _nWritePort(0),
 	_bConnect(false), _bEventRun(false), _pConnect(NULL), _pDisconnect(NULL),
-	_pWriteHandle(NULL), _pAsynContext(NULL), _pContext(NULL),
-	_pEvent(NULL){}
+	_pWriteHandle(NULL), _pAsynContext(NULL), _pContext(NULL)
+	{}
 
 void _connectCallback(const redisAsyncContext *c, int status) {
 	if (status != REDIS_OK) {
@@ -88,7 +109,7 @@ void _disconnectCallback(const redisAsyncContext *c, int status) {
 		printf("Error: %s\n", c->errstr);
 		return;
 	}   
-	printf("Disconnected...\n");
+	cout<<"Disconnected..."<<endl;
 }
 
 void _getCallback(redisAsyncContext *c, void *r, void *privdata) {
@@ -100,16 +121,13 @@ void _getCallback(redisAsyncContext *c, void *r, void *privdata) {
 void RedisRWSplitClientImp::_getContext(bool bAsyn)
 {
 	if (bAsyn) {
-	    _pEvent = event_base_new();
 		_pAsynContext = redisAsyncConnect(_sWriteHost.c_str(), _nWritePort);
 		if (_pAsynContext->err) {
 			/* Let *c leak for now... */
 			redisAsyncFree(_pAsynContext);
 			_pAsynContext = NULL;
-			event_base_dispatch(_pEvent);
-			_pEvent = NULL;
 		}
-		redisLibeventAttach(_pAsynContext, _pEvent);
+		redisAeAttach(_pLoop, _pAsynContext);
 		redisAsyncSetConnectCallback(_pAsynContext, _connectCallback);
 		redisAsyncSetDisconnectCallback(_pAsynContext, _disconnectCallback);
 	}else{
@@ -145,31 +163,26 @@ int RedisRWSplitClientImp::initWriteLayer(const char *sHost, uint16_t nPort)
 
 RedisRWSplitClientImp::~RedisRWSplitClientImp()
 {
+	cout<<"De-construct"<<endl;
 	if (_pAsynContext) {
-		redisAsyncDisconnect(_pAsynContext);
+//		redisAsyncDisconnect(_pAsynContext);
 //		redisAsyncFree(_pAsynContext);
 //		_pAsynContext = NULL;
 	}
-	if (_pConnect) {
+	if (_pContext) {
 		redisFree(_pContext);
-		_pConnect = NULL;
-	}
-	if (_th) {
-	//	pthread_join(_th, NULL);
-	}
-	if (_pEvent) {
-		event_base_free(_pEvent);
+		_pContext = NULL;
 	}
 }
 
 RedisRWSplitClientImp::RedisRWSplitClientImp(const char *sHost, uint16_t nPort):
 	_sReadHost(sHost), _sWriteHost(sHost), _nReadPort(nPort), _nWritePort(nPort),
 	_bConnect(false), _bEventRun(false), _pConnect(NULL), _pDisconnect(NULL),
-	_pWriteHandle(NULL), _pAsynContext(NULL), _pContext(NULL),
-	_pEvent(NULL)
+	_pWriteHandle(NULL), _pAsynContext(NULL), _pContext(NULL)
 {
 	//already set the host and port,
 	//we can initialize the redis handle, 4real
+	_bConnect = true;
 	_getContext(false);	
 	if (!_pContext) {
 		_bConnect = false;
@@ -183,8 +196,7 @@ RedisRWSplitClientImp::RedisRWSplitClientImp(const char *sHost, uint16_t nPort):
 RedisRWSplitClientImp::RedisRWSplitClientImp(const char *sHost, uint16_t nPort,
 		const char *sHost2, uint16_t nPort2):_sReadHost(sHost), _sWriteHost(sHost2), _nReadPort(nPort), _nWritePort(nPort2),
 	_bConnect(false), _bEventRun(false), _pConnect(NULL), _pDisconnect(NULL),
-	_pWriteHandle(NULL) , _pAsynContext(NULL), _pContext(NULL),
-	_pEvent(NULL)
+	_pWriteHandle(NULL) , _pAsynContext(NULL), _pContext(NULL)
 
 {
 	//already set the host and port,
@@ -199,26 +211,25 @@ RedisRWSplitClientImp::RedisRWSplitClientImp(const char *sHost, uint16_t nPort,
 	}
 }
 
-static void* __callback(void* p)
+static void* __start__(void *p)
 {
-	event_base_dispatch( (event_base*)p );
+	aeMain((aeEventLoop*)p);
 	return NULL;
 }
 
-void RedisRWSplitClientImp::eventRun()
+int RedisRWSplitClientImp::eventRun()
 {
-	if (!_bEventRun) {
-		_bEventRun = true;
-		//cout<<"evnt loop start"<<endl;
-		pthread_create(&_th, NULL, __callback, _pEvent);
+	if (_pLoop) {
+		//pthread_create(&_th, NULL, __start__, _pLoop);
+		aeMain(_pLoop);
+		return 0;
 	}
+	return -1;
 }
 
-void RedisRWSplitClient::eventRun()
+int RedisRWSplitClient::eventRun()
 {
-	if (_pHandle) {
-		_pHandle->eventRun();
-	}
+	return RedisRWSplitClientImp::eventRun();
 }
 
 struct redisReply* RedisRWSplitClientImp::cmdReadLayer(const char *sFormat)
@@ -227,13 +238,7 @@ struct redisReply* RedisRWSplitClientImp::cmdReadLayer(const char *sFormat)
 		//TODO: retry
 		return NULL;
 	}
-	//va_list ap;
-	redisReply* reply;
-	reply = (redisReply*)redisCommand(_pContext, sFormat);
-	//va_start(ap, sFormat);
-	//reply = (redisReply*)redisvCommand(_pContext, sFormat, ap);
-	//va_end(ap);
-	return reply;
+	return (redisReply*)redisCommand(_pContext, sFormat);
 }
 
 
@@ -243,7 +248,7 @@ int RedisRWSplitClientImp::cmdWriteLayer(const char *sFormat)
 		//TODO: retry
 		return -1;
 	}
-	return redisAsyncCommand(_pAsynContext, _pWriteHandle, NULL, sFormat);
+	return redisAsyncCommand(_pAsynContext, _pWriteHandle, NULL, "%s", sFormat);
 }
 
 int RedisRWSplitClientImp::setConnectCallback(connectHandle h)

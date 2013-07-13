@@ -37,10 +37,10 @@ typedef struct aeApiState {
 } aeApiState;
 
 static int aeApiCreate(aeEventLoop *eventLoop) {
-    aeApiState *state = zmalloc(sizeof(aeApiState));
+    aeApiState *state = (aeApiState*)zmalloc(sizeof(aeApiState));
 
     if (!state) return -1;
-    state->events = zmalloc(sizeof(struct epoll_event)*eventLoop->setsize);
+    state->events = (epoll_event*)zmalloc(sizeof(struct epoll_event)*eventLoop->setsize);
     if (!state->events) {
         zfree(state);
         return -1;
@@ -56,7 +56,7 @@ static int aeApiCreate(aeEventLoop *eventLoop) {
 }
 
 static void aeApiFree(aeEventLoop *eventLoop) {
-    aeApiState *state = eventLoop->apidata;
+    aeApiState *state = (aeApiState*)eventLoop->apidata;
 
     close(state->epfd);
     zfree(state->events);
@@ -64,7 +64,7 @@ static void aeApiFree(aeEventLoop *eventLoop) {
 }
 
 static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
-    aeApiState *state = eventLoop->apidata;
+    aeApiState *state = (aeApiState*)eventLoop->apidata;
     struct epoll_event ee;
     /* If the fd was already monitored for some event, we need a MOD
      * operation. Otherwise we need an ADD operation. */
@@ -82,7 +82,7 @@ static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
 }
 
 static void aeApiDelEvent(aeEventLoop *eventLoop, int fd, int delmask) {
-    aeApiState *state = eventLoop->apidata;
+    aeApiState *state = (aeApiState*)eventLoop->apidata;
     struct epoll_event ee;
     int mask = eventLoop->events[fd].mask & (~delmask);
 
@@ -101,7 +101,7 @@ static void aeApiDelEvent(aeEventLoop *eventLoop, int fd, int delmask) {
 }
 
 static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
-    aeApiState *state = eventLoop->apidata;
+    aeApiState *state = (aeApiState*)eventLoop->apidata;
     int retval, numevents = 0;
 
     retval = epoll_wait(state->epfd,state->events,eventLoop->setsize,

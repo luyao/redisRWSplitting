@@ -4,7 +4,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <assert.h>
-//#include <iostream>
+#include <iostream>
 #include "hiredis.h"
 #include "async.h"
 #include "adapters/libevent.h"
@@ -12,7 +12,10 @@
 #include "adapters/ae.h"
 using namespace std;
 
+#ifdef CLIENT
+#else
 static aeEventLoop *loop;
+#endif
 
 void getCallback(redisAsyncContext *c, void *r, void *privdata) {
     redisReply *reply = (redisReply*)r;
@@ -36,17 +39,11 @@ void disconnectCallback(const redisAsyncContext *c, int status) {
         printf("Error: %s\n", c->errstr);
         return;
     }
-
     printf("Disconnected...\n");
 }
 
-void* Callback(void *pParam)
-{
-	((RedisRWSplitClient*)pParam)->eventRun();
-	return NULL;
-}
-
 const int MAX_LOOP = 10000;
+const int THREAD_CNT = 32;
 class dis_timer
 {
 	timeval s, e;
@@ -90,11 +87,44 @@ void bearedFunc(){
 	//event_base_dispatch( base );
 
 }
+//
+void* __start__(void*p)
+{
+	//RedisRWSplitClient::eventRun();
+	aeProcessEvents(loop, AE_ALL_EVENTS);
+	return NULL;
+}
+
+void* aeFunctionClient(void *param)
+{
+	dis_timer timer;
+	timer.start();
+	RedisRWSplitClient client("127.0.0.1", 6379);
+	RedisRWSplitClient::eventRun();
+
+	int i = 0;
+	char sCmd[128];
+	while (++i<MAX_LOOP) {
+		snprintf(sCmd, 128, "SET key_%d %d", i, i);
+		client.cmdWriteLayer(sCmd);
+	}
+	timer.end();
+	printf("写入%d条:%d\n", MAX_LOOP, timer.costms() );
+
+	while (1) {
+		sleep(1);
+	}
+	return NULL;
+}
+
+pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 void* aeFunction(void *param)
 {
 	dis_timer timer;
 	timer.start();
+	//aeEventLoop *loop = NULL;
+	//loop = aeCreateEventLoop(1024);
 	redisAsyncContext *c = redisAsyncConnect("127.0.0.1", 6379);
 	if (c->err) {
 		/* Let *c leak for now... */
@@ -102,30 +132,66 @@ void* aeFunction(void *param)
 		return NULL;
 	}   
 
-	loop = aeCreateEventLoop(8192);
 	redisAeAttach(loop, c); 
 	redisAsyncSetConnectCallback(c,connectCallback);
 	redisAsyncSetDisconnectCallback(c,disconnectCallback);
 	int i = 0;
+	char sCmd[128];
 	while (++i<MAX_LOOP) {
-		redisAsyncCommand(c, NULL, NULL, "SET key 123");
+		snprintf(sCmd, 128, "SET %d_%d %d", (int)param, i, i);
+		redisAsyncCommand(c, NULL, NULL, sCmd);
 	}
 	timer.end();
-	printf("同步写入%d条:%d\n", MAX_LOOP, timer.costms() );
+	printf("threads %d 写入%d条:%d\n", (int)param, MAX_LOOP, timer.costms() );
+	while (true) {
+		sleep(1);
+	}
+	//if (1 || !loop->stop) {
+	//	if (loop->beforesleep != NULL)
+	//		loop->beforesleep(loop);
+	//	aeProcessEvents(loop, AE_ALL_EVENTS);
+	//}
+	//aeMain(loop);
 
+//	aeEventLoop *eventLoop = loop;
+//	while ( 1 ) {
+//		if (pthread_mutex_trylock(&lock)) {
+//			return 0;
+//		}
+//		cout<<"inner the loop"<<endl;
+//event_loop:
+//		eventLoop->stop = 0;
+//		while (!eventLoop->stop) {
+//			if (eventLoop->beforesleep != NULL)
+//				eventLoop->beforesleep(eventLoop);
+//			aeProcessEvents(eventLoop, AE_ALL_EVENTS);
+//		}  
+//		goto event_loop;
+//		//never give the lock
+//		//pthread_mutex_unlock(&lock);
+//	}
+	cout<<"REACH THE END?"<<endl;
 	return NULL;
 }
 
+
 int multiTreadTest()
 {
-	const int THREAD_CNT = 32;
 	pthread_t threadArray[THREAD_CNT];
 	for (int i = 0; i<THREAD_CNT;++i) {
-		pthread_create(&threadArray[i], NULL, aeFunction, NULL);
+#ifdef CLIENT
+		pthread_create(&threadArray[i], NULL, aeFunctionClient, NULL);
+#else
+		pthread_create(&threadArray[i], NULL, aeFunction, i);
+#endif
 	}
+
 	for (int i = 0; i<THREAD_CNT; ++i) {
 		pthread_join(threadArray[i], NULL);
 	}
+	//pthread_t th;
+	//pthread_create(&th, NULL, __start__, loop);
+	//pthread_join(th, NULL);
 	return 0;
 }
 
@@ -136,9 +202,9 @@ void clientFunc(bool bAsyn)
 	RedisRWSplitClient client;
 	client.initReadLayer("127.0.0.1", 6379);
 	if (bAsyn) {
-		//client.initWriteLayer("127.0.0.1",6379);
-		//client.setWriteCallback(NULL);
-		//client.eventRun();
+		client.initWriteLayer("127.0.0.1",6379);
+		client.setWriteCallback(NULL);
+		client.eventRun();
 	}
 
 	dis_timer timer;
@@ -156,21 +222,57 @@ void clientFunc(bool bAsyn)
 	printf("写入10000条:%d\n", timer.costms() );
 }
 
-int main (int argc, char **argv) {
+int main (int argc, char **argv) 
+{
     signal(SIGPIPE, SIG_IGN);
-
-//	aeFunction();
+	loop = aeCreateEventLoop(8192);
+	if (!loop) {
+		cout<<"NULL LOOP POINTER"<<endl;
+		return 0;
+	}
+	pthread_t th;
+	//pthread_create(&th, NULL, __start__, NULL);
+	pthread_create(&th, NULL, __start__, NULL);
 	multiTreadTest();
-	//clientFunc(false);
-	//bearedFunc();
-//	clientFunc(true);
+	pthread_join(th, NULL);
+	//aeMain(loop);
+	//pthread_join(th, NULL);
+	
+	//pthread_t th;
+	//pthread_create(&th, NULL, __start__, loop);
+	cout<<"DONE!"<<endl;
 	while (true) {
 		sleep(1);
 	}
-	printf("DONE\n");
-	aeMain(loop);
-	assert(1);
 	//pthread_join(th, NULL);
-    return 0;
+	return 0;
 }
 
+//{
+//#ifdef CLIENT
+//	//pthread_create(&th, NULL, __start__, NULL);
+//#else
+//	loop = aeCreateEventLoop(8192);
+//	//pthread_create(&th, NULL, __start__, loop);
+//#endif
+////	aeFunction();
+//	multiTreadTest();
+//	//clientFunc(false);
+//	//bearedFunc();
+////	clientFunc(true);
+//	aeMain(loop);
+//#ifdef CLIENT
+//	pthread_create(&th, NULL, __start__, NULL);
+//#else
+//	//pthread_create(&th, NULL, __start__, loop);
+//#endif
+//	//RedisRWSplitClient::eventRun();
+//	printf("DONE\n");
+//	while (true) {
+//		sleep(1);
+//	}
+//	//pthread_join(th, NULL);
+//
+//    return 0;
+//}
+//
